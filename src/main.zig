@@ -171,11 +171,34 @@ const Interpreter = struct {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
-    //const allocator = gpa.allocator();
+    const stdout = std.io.getStdOut();
+    const stdin = std.io.getStdIn();
+    defer stdout.close();
+    defer stdin.close();
 
-    const text = "10 * 25 + 5";
-    var int = Interpreter.init(text);
+    const out = stdout.writer();
+    const in = stdin.reader();
+    const allocator = gpa.allocator();
 
-    const result = try int.expr();
-    std.debug.print("{d}\n", .{result});
+    const exit: []const u8 = "exit";
+    var condition = true;
+
+    while (condition) {
+        try out.print(">> ", .{});
+        const input = try in.readUntilDelimiterOrEofAlloc(allocator, '\n', 1024);
+        if (input) |text| {
+            defer allocator.free(input.?);
+            if (std.mem.eql(u8, exit, text)) {
+                condition = false;
+                break;
+            }
+
+            var int = Interpreter.init(text);
+
+            const result = try int.expr();
+            try out.print("{d}\n", .{result});
+        } else {
+            continue;
+        }
+    }
 }
