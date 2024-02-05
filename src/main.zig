@@ -4,6 +4,7 @@ const ArrayList = std.ArrayList;
 const HashMap = std.HashMap;
 const Type = std.builtin.Type;
 
+// Token Types
 const TType = enum {
     INTEGER,
     PLUS,
@@ -35,22 +36,20 @@ const TokenError = error{
     InvalidType,
 };
 
-const Interpreter = struct {
+const Lexer = struct {
     text: []const u8,
     pos: usize,
     current_char: ?u8,
-    current_token: *Token,
 
-    pub fn init(text: []const u8) Interpreter {
-        return Interpreter{
+    pub fn init(text: []const u8) Lexer {
+        return Lexer{
             .text = text,
             .pos = 0,
-            .current_token = undefined,
             .current_char = text[0],
         };
     }
 
-    fn advance(self: *Interpreter) void {
+    fn advance(self: *Lexer) void {
         self.pos += 1;
         if (self.pos > self.text.len - 1) {
             self.current_char = null;
@@ -59,13 +58,13 @@ const Interpreter = struct {
         }
     }
 
-    fn skipWhitespace(self: *Interpreter) void {
+    fn skipWhitespace(self: *Lexer) void {
         while (self.current_char != null and std.ascii.isWhitespace(self.current_char.?)) {
             self.advance();
         }
     }
 
-    fn integer(self: *Interpreter) !u8 {
+    fn integer(self: *Lexer) !u8 {
         const alloc = std.heap.page_allocator;
         var num = ArrayList(u8).init(alloc);
         defer num.deinit();
@@ -79,7 +78,7 @@ const Interpreter = struct {
         return ret;
     }
 
-    pub fn getNextToken(self: *Interpreter) TokenError!Token {
+    pub fn getNextToken(self: *Lexer) TokenError!Token {
         while (self.current_char != null) {
             if (std.ascii.isWhitespace(self.current_char.?)) {
                 self.skipWhitespace();
@@ -87,7 +86,7 @@ const Interpreter = struct {
             }
 
             if (std.ascii.isDigit(self.current_char.?)) {
-                const num = self.integer() catch return TokenError.InvalidType;
+                const num = self.integer() catch 0;
                 return Token.init(TType.INTEGER, num);
             }
 
@@ -116,11 +115,47 @@ const Interpreter = struct {
 
         return Token.init(TType.EOF, undefined);
     }
+};
+
+const Interpreter = struct {
+    current_token: Token,
+    lexer: *Lexer,
+
+    pub fn init(lexer: *Lexer) !Interpreter {
+        return Interpreter{
+            .lexer = lexer,
+            .current_token = try lexer.getNextToken(),
+        };
+    }
+
+    pub fn factor(self: *Interpreter) !u8 {
+        const token = self.current_token;
+        try self.eat(TType.INTEGER);
+        return token.value;
+    }
+
+    pub fn term(self: *Interpreter) !u8 {
+        var result = try self.factor();
+
+        while (self.current_token.Type == TType.MULTI or self.current_token.Type == TType.DIVIS) {
+            const token = self.current_token;
+            if (token.Type == TType.MULTI) {
+                try self.eat(TType.MULTI);
+                const part = try self.factor();
+                result = result * part;
+            } else if (token.Type == TType.DIVIS) {
+                try self.eat(TType.DIVIS);
+                const part = try self.factor();
+                result = result / part;
+            }
+        }
+
+        return result;
+    }
 
     pub fn eat(self: *Interpreter, token_type: TType) !void {
         if (self.current_token.Type == token_type) {
-            var curr = try self.getNextToken();
-            self.current_token = &curr;
+            self.current_token = try self.lexer.getNextToken();
         } else {
             std.debug.print("{any}, {any}\n", .{ self.current_token.Type, token_type });
             return TokenError.InvalidType;
@@ -128,45 +163,33 @@ const Interpreter = struct {
     }
 
     pub fn expr(self: *Interpreter) !u8 {
-        var result: u8 = undefined;
+        // TODO: implement pemdas
+        //
+        var result = try self.term();
 
-        var curr = try self.getNextToken();
-
-        self.current_token = &curr;
-
-        var left = self.current_token.*;
-        try self.eat(TType.INTEGER);
-
-        while (self.current_token.Type != TType.EOF) {
-            const op = self.current_token.*;
-            if (op.Type == TType.PLUS) {
+        while (self.current_token.Type == TType.PLUS or self.current_token.Type == TType.MINUS) {
+            const token = self.current_token;
+            if (token.Type == TType.PLUS) {
                 try self.eat(TType.PLUS);
-            } else if (op.Type == TType.MULTI) {
-                try self.eat(TType.MULTI);
-            } else if (op.Type == TType.DIVIS) {
-                try self.eat(TType.DIVIS);
-            } else {
+                const part = try self.term();
+                result = result + part;
+            } else if (token.Type == TType.MINUS) {
                 try self.eat(TType.MINUS);
+                const part = try self.term();
+                result = result - part;
             }
-
-            const right = self.current_token.*;
-            try self.eat(TType.INTEGER);
-
-            if (op.Type == TType.PLUS) {
-                result = left.value + right.value;
-            } else if (op.Type == TType.MINUS) {
-                result = left.value - right.value;
-            } else if (op.Type == TType.MULTI) {
-                result = left.value * right.value;
-            } else {
-                result = left.value / right.value;
-            }
-            left = Token.init(TType.INTEGER, result);
         }
-
         return result;
     }
 };
+
+test {
+    const text = "5+5*5\n";
+    var lex = Lexer.init(text);
+    var int = try Interpreter.init(&lex);
+    const result = try int.expr();
+    try std.testing.expect(result == 30);
+}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -192,8 +215,8 @@ pub fn main() !void {
                 condition = false;
                 break;
             }
-
-            var int = Interpreter.init(text);
+            var lex = Lexer.init(text);
+            var int = try Interpreter.init(&lex);
 
             const result = try int.expr();
             try out.print("{d}\n", .{result});
