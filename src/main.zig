@@ -12,6 +12,8 @@ const TType = enum {
     MULTI,
     DIVIS,
     EOF,
+    LPAREN,
+    RPAREN,
 };
 
 const Token = struct {
@@ -86,7 +88,7 @@ const Lexer = struct {
             }
 
             if (std.ascii.isDigit(self.current_char.?)) {
-                const num = self.integer() catch 0;
+                const num = self.integer() catch return TokenError.InvalidCharacter;
                 return Token.init(TType.INTEGER, num);
             }
 
@@ -110,6 +112,16 @@ const Lexer = struct {
                 return Token.init(TType.DIVIS, '/');
             }
 
+            if (self.current_char == '(') {
+                self.advance();
+                return Token.init(TType.LPAREN, '(');
+            }
+
+            if (self.current_char == ')') {
+                self.advance();
+                return Token.init(TType.RPAREN, ')');
+            }
+
             return TokenError.InvalidToken;
         }
 
@@ -128,13 +140,21 @@ const Interpreter = struct {
         };
     }
 
-    pub fn factor(self: *Interpreter) !u8 {
+    pub fn factor(self: *Interpreter) TokenError!u8 {
         const token = self.current_token;
-        try self.eat(TType.INTEGER);
-        return token.value;
+        if (token.Type == TType.INTEGER) {
+            try self.eat(TType.INTEGER);
+            return token.value;
+        } else if (token.Type == TType.LPAREN) {
+            try self.eat(TType.LPAREN);
+            const result = try self.expr();
+            try self.eat(TType.RPAREN);
+            return result;
+        }
+        return TokenError.InvalidToken;
     }
 
-    pub fn term(self: *Interpreter) !u8 {
+    pub fn term(self: *Interpreter) TokenError!u8 {
         var result = try self.factor();
 
         while (self.current_token.Type == TType.MULTI or self.current_token.Type == TType.DIVIS) {
@@ -153,7 +173,7 @@ const Interpreter = struct {
         return result;
     }
 
-    pub fn eat(self: *Interpreter, token_type: TType) !void {
+    pub fn eat(self: *Interpreter, token_type: TType) TokenError!void {
         if (self.current_token.Type == token_type) {
             self.current_token = try self.lexer.getNextToken();
         } else {
@@ -162,7 +182,7 @@ const Interpreter = struct {
         }
     }
 
-    pub fn expr(self: *Interpreter) !u8 {
+    pub fn expr(self: *Interpreter) TokenError!u8 {
         // TODO: implement pemdas
         //
         var result = try self.term();
@@ -184,11 +204,11 @@ const Interpreter = struct {
 };
 
 test {
-    const text = "5+5*5\n";
+    const text = "(5+5)*5\n";
     var lex = Lexer.init(text);
     var int = try Interpreter.init(&lex);
     const result = try int.expr();
-    try std.testing.expect(result == 30);
+    try std.testing.expect(result == 50);
 }
 
 pub fn main() !void {
