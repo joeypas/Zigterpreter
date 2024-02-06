@@ -366,7 +366,7 @@ pub fn main() !void {
                 defer parser.deinit();
                 var int = Interpreter.init(&parser);
                 const result = int.interpret() catch |err| {
-                    try out.print("Error on line:{d}\n{any}\n", .{ i, err });
+                    try out.print("Error on line: {d}\n{any}\n", .{ i, err });
                     break;
                 };
 
