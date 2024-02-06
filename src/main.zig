@@ -1,8 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const HashMap = std.HashMap;
-const Type = std.builtin.Type;
 
 // Token Types
 const TType = enum {
@@ -35,10 +33,14 @@ const Token = struct {
     }
 
     pub fn str(self: Token, allocator: Allocator) std.fmt.AllocPrintError![]u8 {
-        return std.fmt.allocPrint(allocator, "Token({s}, {c})", .{ @tagName(self.Type), self.value });
+        switch (self.value) {
+            .Num => |num| return std.fmt.allocPrint(allocator, "Token({s}, {d})", .{ @tagName(self.Type), num }),
+            .Char => |char| return std.fmt.allocPrint(allocator, "Token({s}, {c})", .{ @tagName(self.Type), char }),
+        }
     }
 };
 
+// Error Types
 const TokenError = error{ InvalidToken, InvalidCharacter, InvalidType, Mem };
 
 // LEXER CODE
