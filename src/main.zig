@@ -16,11 +16,13 @@ const TType = enum {
     RPAREN,
 };
 
+// Type to hold either a character or a number
 const CharNum = union(enum) {
     Char: u8,
     Num: i64,
 };
 
+// Struct to hold the token type and the value
 const Token = struct {
     Type: TType,
     value: CharNum,
@@ -39,11 +41,14 @@ const Token = struct {
 
 const TokenError = error{ InvalidToken, InvalidCharacter, InvalidType, Mem };
 
+// LEXER CODE
+// The lexer takes in a string and returns a list of tokens
 const Lexer = struct {
     text: []const u8,
     pos: usize,
     current_char: ?u8,
 
+    // Initialize the lexer with the input string
     pub fn init(text: []const u8) Lexer {
         return Lexer{
             .text = text,
@@ -52,6 +57,7 @@ const Lexer = struct {
         };
     }
 
+    // Advance the current character
     fn advance(self: *Lexer) void {
         self.pos += 1;
         if (self.pos > self.text.len - 1) {
@@ -61,12 +67,14 @@ const Lexer = struct {
         }
     }
 
+    // Skip whitespace
     fn skipWhitespace(self: *Lexer) void {
         while (self.current_char != null and std.ascii.isWhitespace(self.current_char.?)) {
             self.advance();
         }
     }
 
+    // Parse a number
     fn integer(self: *Lexer) !i64 {
         const alloc = std.heap.page_allocator;
         var num = ArrayList(u8).init(alloc);
@@ -81,6 +89,7 @@ const Lexer = struct {
         return ret;
     }
 
+    // Get the next token
     pub fn getNextToken(self: *Lexer) TokenError!Token {
         while (self.current_char != null) {
             if (std.ascii.isWhitespace(self.current_char.?)) {
@@ -130,12 +139,16 @@ const Lexer = struct {
     }
 };
 
+// PARSER CODE
+// The parser takes in a list of tokens and returns an abstract syntax tree
 const Parser = struct {
     current_token: Token,
     lexer: *Lexer,
     allocator: Allocator,
     nodeList: ArrayList(*Tree(Token)),
 
+    // Initialize the parser with the lexer and a list
+    // to keep track of allocated nodes
     pub fn init(alloc: Allocator, lexer: *Lexer) !Parser {
         return Parser{
             .allocator = alloc,
@@ -145,6 +158,7 @@ const Parser = struct {
         };
     }
 
+    // Deinitialize the parser and free all the nodes
     pub fn deinit(self: *Parser) void {
         for (self.nodeList.items) |node| {
             self.allocator.destroy(node);
@@ -152,6 +166,7 @@ const Parser = struct {
         self.nodeList.deinit();
     }
 
+    // Factor is the smallest unit of the expression
     pub fn factor(self: *Parser) TokenError!*Tree(Token) {
         const token = self.current_token;
         if (token.Type == TType.INTEGER) {
@@ -169,6 +184,7 @@ const Parser = struct {
         return TokenError.InvalidToken;
     }
 
+    // Term is the next level of the expression
     pub fn term(self: *Parser) TokenError!*Tree(Token) {
         var result = try self.factor();
 
@@ -198,6 +214,7 @@ const Parser = struct {
         return result;
     }
 
+    // Eat a token if it matches the current token
     pub fn eat(self: *Parser, token_type: TType) TokenError!void {
         if (self.current_token.Type == token_type) {
             self.current_token = try self.lexer.getNextToken();
@@ -207,6 +224,7 @@ const Parser = struct {
         }
     }
 
+    // Expression is the highest level of the expression
     pub fn expr(self: *Parser) TokenError!*Tree(Token) {
         // TODO: implement pemdas
         //
@@ -237,6 +255,8 @@ const Parser = struct {
     }
 };
 
+// The tree type is a union of a data type and a branch type
+// basically the AST type
 pub fn Tree(comptime T: type) type {
     return union(enum) {
         Data: T,
@@ -249,6 +269,8 @@ pub fn Tree(comptime T: type) type {
     };
 }
 
+// INTERPRETER CODE
+// The interpreter takes in an abstract syntax tree and returns the result of the expression
 const Interpreter = struct {
     parser: *Parser,
 
@@ -258,6 +280,7 @@ const Interpreter = struct {
         };
     }
 
+    // Recursively visit the tree and return the result
     fn visit(self: *Interpreter, node: *Tree(Token)) i64 {
         switch (node.*) {
             .Branch => |branch| {
@@ -324,11 +347,17 @@ pub fn main() !void {
                 break;
             }
             var lex = Lexer.init(text);
-            var parser = try Parser.init(allocator, &lex);
+            var parser = Parser.init(allocator, &lex) catch |err| {
+                try out.print("Error: {any}\n", .{err});
+                continue;
+            };
             defer parser.deinit();
             var int = Interpreter.init(&parser);
 
-            const result = try int.interpret();
+            const result = int.interpret() catch |err| {
+                try out.print("Error: {any}\n", .{err});
+                continue;
+            };
             try out.print("{d}\n", .{result});
         } else {
             continue;
