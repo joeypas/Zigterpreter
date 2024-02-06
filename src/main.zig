@@ -327,6 +327,11 @@ test {
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+
     const stdout = std.io.getStdOut();
     const stdin = std.io.getStdIn();
     defer stdout.close();
@@ -334,35 +339,71 @@ pub fn main() !void {
 
     const out = stdout.writer();
     const in = stdin.reader();
-    const allocator = gpa.allocator();
 
-    const exit: []const u8 = "exit";
-    var condition = true;
+    _ = args.next();
 
-    while (condition) {
-        try out.print(">> ", .{});
-        const input = try in.readUntilDelimiterOrEofAlloc(allocator, '\n', 1024);
-        if (input) |text| {
-            defer allocator.free(input.?);
-            if (std.mem.eql(u8, exit, text)) {
-                condition = false;
+    if (args.next()) |file_name| {
+        const file = try std.fs.cwd().openFile(file_name, .{ .mode = .read_only });
+        defer file.close();
+        const stats = try file.stat();
+        const file_contents = try file.readToEndAlloc(allocator, stats.size);
+        defer allocator.free(file_contents);
+
+        var sp = std.mem.split(u8, file_contents, "\n");
+
+        var i: usize = 0;
+
+        while (true) : (i += 1) {
+            if (sp.next()) |line| {
+                if (line.len == 0) {
+                    break;
+                }
+                var lex = Lexer.init(line);
+                var parser = Parser.init(allocator, &lex) catch |err| {
+                    try out.print("Error on line: {d}\n{any}\n", .{ i, err });
+                    break;
+                };
+                defer parser.deinit();
+                var int = Interpreter.init(&parser);
+                const result = int.interpret() catch |err| {
+                    try out.print("Error on line:{d}\n{any}\n", .{ i, err });
+                    break;
+                };
+
+                try out.print("Line {d}: {d}\n", .{ i, result });
+            } else {
                 break;
             }
-            var lex = Lexer.init(text);
-            var parser = Parser.init(allocator, &lex) catch |err| {
-                try out.print("Error: {any}\n", .{err});
-                continue;
-            };
-            defer parser.deinit();
-            var int = Interpreter.init(&parser);
+        }
+    } else {
+        const exit: []const u8 = "exit";
+        var condition = true;
 
-            const result = int.interpret() catch |err| {
-                try out.print("Error: {any}\n", .{err});
+        while (condition) {
+            try out.print(">> ", .{});
+            const input = try in.readUntilDelimiterOrEofAlloc(allocator, '\n', 1024);
+            if (input) |text| {
+                defer allocator.free(input.?);
+                if (std.mem.eql(u8, exit, text)) {
+                    condition = false;
+                    break;
+                }
+                var lex = Lexer.init(text);
+                var parser = Parser.init(allocator, &lex) catch |err| {
+                    try out.print("Error: {any}\n", .{err});
+                    continue;
+                };
+                defer parser.deinit();
+                var int = Interpreter.init(&parser);
+
+                const result = int.interpret() catch |err| {
+                    try out.print("Error: {any}\n", .{err});
+                    continue;
+                };
+                try out.print("{d}\n", .{result});
+            } else {
                 continue;
-            };
-            try out.print("{d}\n", .{result});
-        } else {
-            continue;
+            }
         }
     }
 }
