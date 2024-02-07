@@ -18,7 +18,7 @@ pub fn main() !void {
 
     while (i < 2000) : (i += 1) {
         var line = std.ArrayList(u8).init(arena.allocator());
-        defer _ = arena.reset(.free_all);
+        defer _ = arena.reset(.retain_capacity);
 
         var j: usize = 0;
 
