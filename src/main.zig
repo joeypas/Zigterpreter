@@ -303,7 +303,7 @@ const Interpreter = struct {
                 } else if (branch.Data.Type == TType.DIVIS) {
                     return @divTrunc(self.visit(branch.left), self.visit(branch.right));
                 } else {
-                    return 0;
+                    unreachable;
                 }
             },
             .Data => |data| {
