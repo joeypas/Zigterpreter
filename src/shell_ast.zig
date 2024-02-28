@@ -51,6 +51,10 @@ const ReducedTypes = enum {
     here_end,
     newline_list,
     linebreak,
+    sparator_op,
+    separator,
+    operator,
+    reserved,
 };
 
 const Side = enum {
@@ -87,34 +91,29 @@ pub fn Tree(comptime Child: type) type {
             self.curr = self.head.?;
             self.deleter();
             self.allocator.destroy(self.head.?);
-            std.debug.print("Deleted head\n", .{});
         }
 
         fn deleter(self: *This) void {
             if (self.curr) |current| {
-                if (self.curr.?.right) |right| {
+                if (current.right) |right| {
                     self.curr = right;
                     self.deleter();
+                } else if (current.left) |left| {
+                    self.curr = left;
+                    self.deleter();
                 } else {
-                    if (current.left) |left| {
-                        self.curr = left;
-                        self.deleter();
-                    } else {
-                        if (current.parent) |parent| {
-                            if (parent.right) |right| {
-                                self.allocator.destroy(right);
-                                std.debug.print("Deleted right\n", .{});
-                                parent.right = null;
-                            }
-
-                            if (parent.left) |left| {
-                                self.allocator.destroy(left);
-                                std.debug.print("Deleted left\n", .{});
-                                parent.left = null;
-                            }
-                            self.curr = parent;
-                            self.deleter();
+                    if (current.parent) |parent| {
+                        if (parent.right) |right| {
+                            self.allocator.destroy(right);
+                            parent.right = null;
+                        } else if (parent.left) |left| {
+                            self.allocator.destroy(left);
+                            parent.left = null;
                         }
+
+                        self.curr = parent;
+
+                        self.deleter();
                     }
                 }
             }
@@ -182,13 +181,28 @@ pub fn Tree(comptime Child: type) type {
                 return TreeErr.NoCurr;
             }
         }
+
+        pub fn branchExists(self: *This, side: Side) bool {
+            if (self.curr) |current| {
+                switch (side) {
+                    .LEFT => {
+                        if (current.left != null) return true //
+                        else return false;
+                    },
+                    .RIGHT => {
+                        if (current.right != null) return true //
+                        else return false;
+                    },
+                }
+            } else {
+                return false;
+            }
+        }
     };
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+test {
+    const allocator = std.testing.allocator;
     var tree = Tree(Token).init(allocator);
     defer tree.deinit();
     try tree.addChild(.program, null, .LEFT);
@@ -223,17 +237,187 @@ pub const AST = struct {
     allocator: Allocator,
     tokens: []const Token,
     index: usize,
+    depth: usize,
 
     pub fn init(allocator: Allocator, tokens: []const Token) AST {
-        return AST{
-            .tree = Tree(Token).init(allocator),
-            .allocator = allocator,
-            .tokens = tokens,
-            .index = 0,
-        };
+        return AST{ .tree = Tree(Token).init(allocator), .allocator = allocator, .tokens = tokens, .index = 0, .depth = 0 };
     }
 
     pub fn deinit(self: *AST) void {
         self.tree.deinit();
     }
+
+    fn consume(self: *AST, t: ReducedTypes, token: ?Token, side: Side) TreeErr!void {
+        if (token) |tok| {
+            self.index += 1;
+            try self.tree.addChild(t, tok, side);
+            try self.tree.visitBranch(side);
+            self.depth += 1;
+        } else {
+            try self.tree.addChild(t, null, side);
+            try self.tree.visitBranch(side);
+            self.depth += 1;
+        }
+    }
+
+    fn parseCompleteCommand(self: *AST) TreeErr!void {
+        try self.tree.addChild(.complete_command, null, .LEFT);
+        while (self.index < self.tokens.len) {
+            switch (self.tokens[self.index].Type) {
+                .AND, .SEMI => {
+                    try self.consume(.separator, self.tokens[self.index], .RIGHT);
+                },
+                else => {
+                    try self.consume(.list, null, .LEFT);
+                    try self.parseList();
+                },
+            }
+        }
+    }
+
+    fn parseList(self: *AST) TreeErr!void {
+        while (self.index < self.tokens.len) {
+            switch (self.tokens[self.index].Type) {
+                .AND, .SEMI => {
+                    try self.consume(.and_or, self.tokens[self.index], .RIGHT);
+                    try self.parseAndOr();
+                },
+                else => {
+                    try self.consume(.and_or, null, .LEFT);
+                    try self.parseAndOr();
+                },
+            }
+        }
+    }
+
+    fn parseAndOr(self: *AST) TreeErr!void {
+        while (self.index < self.tokens.len) {
+            switch (self.tokens[self.index].Type) {
+                .AND_IF, .OR_IF => {
+                    try self.consume(.pipeline, self.tokens[self.index], .RIGHT);
+                    try self.parsePipeline();
+                },
+                else => {
+                    try self.consume(.pipeline, null, .LEFT);
+                    try self.parsePipeline();
+                },
+            }
+        }
+    }
+
+    fn parsePipeline(self: *AST) TreeErr!void {
+        while (self.index < self.tokens.len) {
+            switch (self.tokens[self.index].Type) {
+                .BANG => {
+                    try self.consume(.reserved, self.tokens[self.index], .LEFT);
+                    try self.tree.visitParent();
+                    try self.consume(.pipe_sequence, null, .RIGHT);
+                    try self.parsePipeSeq();
+                },
+                else => {
+                    try self.consume(.pipe_sequence, null, .LEFT);
+                    try self.parsePipeSeq();
+                },
+            }
+        }
+    }
+
+    fn parsePipeSeq(self: *AST) TreeErr!void {
+        while (self.index < self.tokens.len) {
+            switch (self.tokens[self.index].Type) {
+                .PIPE => {
+                    try self.consume(.command, self.tokens[self.index], .RIGHT);
+                    try self.parseCommand();
+                },
+                else => {
+                    try self.consume(.command, null, .LEFT);
+                    try self.parseCommand();
+                },
+            }
+        }
+    }
+
+    fn parseCommand(self: *AST) TreeErr!void {
+        while (self.index < self.tokens.len) {
+            switch (self.tokens[self.index].Type) {
+                .LPAREN, .LBRACE, .FOR, .CASE, .WHILE, .UNTIL => {
+                    try self.consume(.compound_command, null, .LEFT);
+                    try self.parseCompoundCommand();
+                },
+                .WORD => {
+                    switch (self.tokens[self.index + 1].Type) {
+                        .LPAREN => {
+                            try self.consume(.function_definition, null, .LEFT);
+                            //try self.parseFunctionDefinition();
+                        },
+                        else => {
+                            try self.consume(.simple_command, null, .LEFT);
+                            try self.parseSimpleCommand();
+                        },
+                    }
+                },
+                else => {
+                    try self.consume(.redirect_list, null, .RIGHT);
+                    //try self.parseRedirectList();
+                },
+            }
+        }
+    }
+
+    fn parseCompoundCommand(self: *AST) !void {
+        _ = self;
+    }
+
+    fn parseSimpleCommand(self: *AST) TreeErr!void {
+        while (self.index < self.tokens.len) {
+            switch (self.tokens[self.index].Type) {
+                .WORD => {
+                    if (self.tree.branchExists(.LEFT)) {
+                        std.debug.print("cmd_suffix: {s}\n", .{self.tokens[self.index].value.Str});
+                        try self.consume(.cmd_suffix, self.tokens[self.index], .RIGHT);
+                        try self.tree.visitParent();
+                        self.depth -= 1;
+                    } else {
+                        std.debug.print("cmd_name: {s}\n", .{self.tokens[self.index].value.Str});
+                        try self.consume(.cmd_name, self.tokens[self.index], .LEFT);
+                        try self.tree.visitParent();
+                        self.depth -= 1;
+                    }
+                },
+                else => {
+                    var temp = self.depth;
+                    for (1..self.depth) |i| {
+                        try self.tree.visitParent();
+                        _ = i;
+                        temp -= 1;
+                    }
+                    self.depth -= temp;
+                    //std.debug.print("{any}\n", .{self.tree.curr.?.Type});
+                    self.parseList() catch std.debug.print("FAIL\n", .{});
+                },
+            }
+        }
+    }
+
+    pub fn parse(self: *AST) !void {
+        try self.parseCompleteCommand();
+    }
 };
+
+test "parse 2 commands" {
+    const allocator = std.testing.allocator;
+
+    const line = "ls test; echo hello";
+
+    var lex = try Lexer.init(line, allocator);
+    defer lex.deinit();
+
+    var list = try getAllTokens(allocator, &lex);
+    defer list.deinit();
+
+    var ast = AST.init(allocator, list.items);
+
+    try ast.parse();
+
+    ast.deinit();
+}
