@@ -36,6 +36,7 @@ pub const TType = enum {
     IN,
     PIPE,
     AND,
+    OR,
     SEMI,
     LPAREN,
     RPAREN,
@@ -292,7 +293,7 @@ pub const Lexer = struct {
                 if (std.mem.eql(u8, wo, "until")) return Token.init(TType.UNTIL, .{ .Word = .UNTIL });
                 if (std.mem.eql(u8, wo, "for")) return Token.init(TType.FOR, .{ .Word = .FOR });
 
-                if (std.ascii.isWhitespace(self.current_char.?)) {
+                if (std.ascii.isWhitespace(self.current_char orelse ' ')) {
                     self.skipWhitespace();
                 }
                 if (self.current_char == '=') {
@@ -322,13 +323,39 @@ pub fn getAllTokens(allocator: Allocator, lex: *Lexer) !ArrayList(Token) {
     return list;
 }
 
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const string = "ls test > test";
+    var lex = try Lexer.init(string, allocator);
+    defer lex.deinit();
+
+    var list = try getAllTokens(allocator, &lex);
+    defer list.deinit();
+
+    for (list.items) |item| {
+        switch (item.Type) {
+            .WORD => {
+                _ = std.process.execv(allocator, &([_][]const u8{item.value.Str})) catch return;
+            },
+            else => {
+                continue;
+            },
+        }
+    }
+}
+
 test {
-    const string = "< > ; | assign=two (demo_String \"Test <> ;\"); \n if";
+    const string = "ls test > test";
     var lex = try Lexer.init(string, std.testing.allocator);
     defer lex.deinit();
 
     var list = try getAllTokens(std.testing.allocator, &lex);
     defer list.deinit();
+
+    std.debug.print("\n", .{});
 
     for (list.items) |item| {
         const str = try item.str(std.testing.allocator);

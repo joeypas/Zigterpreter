@@ -322,7 +322,7 @@ const Interpreter = struct {
     }
 };
 
-test {
+test "Lexer" {
     const text = "(5+5)*5\n";
     var lex = Lexer.init(text, std.testing.allocator);
     var parser = try Parser.init(std.testing.allocator, &lex);
