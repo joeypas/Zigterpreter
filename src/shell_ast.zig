@@ -75,6 +75,7 @@ pub fn Tree(comptime Child: type) type {
             parent: ?*Node,
             child: ?Child,
         };
+
         head: ?*Node,
         curr: ?*Node,
         allocator: Allocator,
@@ -198,10 +199,38 @@ pub fn Tree(comptime Child: type) type {
                 return false;
             }
         }
+
+        pub fn bottom(self: *This) void {
+            var temp = self.head;
+            while (temp.?.left != null) {
+                temp = temp.?.left;
+            }
+            self.curr = temp.?;
+        }
+
+        pub fn next(self: *This) ?Node {
+            if (self.curr) |current| {
+                if (current.right) |right| {
+                    const ret = right.*;
+                    self.allocator.destroy(right);
+                    current.right = null;
+                    return ret;
+                } else {
+                    const ret = current.*;
+                    if (current.parent) |parent| {
+                        self.curr = parent;
+                        self.allocator.destroy(current);
+                        self.curr.?.left = null;
+                    }
+                    return ret;
+                }
+            }
+            return null;
+        }
     };
 }
 
-test {
+test "tree" {
     const allocator = std.testing.allocator;
     var tree = Tree(Token).init(allocator);
     defer tree.deinit();
@@ -212,24 +241,24 @@ test {
 
     const tok2 = Token.init(.WORD, .{ .Num = 2 });
     try tree.addChild(.cmd_word, tok2, .RIGHT);
-    std.debug.print("{any}\n\n", .{tree.curr.?.Type});
+    //std.debug.print("{any}\n\n", .{tree.curr.?.Type});
 
     try tree.visitBranch(.LEFT);
-    std.debug.print("{any}\n\n", .{tree.curr.?.Type});
+    //std.debug.print("{any}\n\n", .{tree.curr.?.Type});
 
     try tree.visitParent();
     try tree.visitBranch(.RIGHT);
-    std.debug.print("{any}\n\n", .{tree.curr.?.Type});
+    //std.debug.print("{any}\n\n", .{tree.curr.?.Type});
 
     const tok3 = Token.init(.WORD, .{ .Num = 3 });
     try tree.addChild(.cmd_prefix, tok3, .LEFT);
     try tree.addChild(.cmd_suffix, tok3, .RIGHT);
     try tree.visitBranch(.LEFT);
 
-    std.debug.print("{any}\n\n", .{tree.curr.?.Type});
+    //std.debug.print("{any}\n\n", .{tree.curr.?.Type});
     try tree.visitParent();
     try tree.visitBranch(.RIGHT);
-    std.debug.print("{any}\n", .{tree.curr.?.Type});
+    //std.debug.print("{any}\n", .{tree.curr.?.Type});
 }
 
 pub const AST = struct {
@@ -250,10 +279,18 @@ pub const AST = struct {
     fn consume(self: *AST, t: ReducedTypes, token: ?Token, side: Side) TreeErr!void {
         if (token) |tok| {
             self.index += 1;
+            while (self.tree.branchExists(side)) {
+                try self.tree.visitBranch(side);
+                self.depth += 1;
+            }
             try self.tree.addChild(t, tok, side);
             try self.tree.visitBranch(side);
             self.depth += 1;
         } else {
+            while (self.tree.branchExists(side)) {
+                try self.tree.visitBranch(side);
+                self.depth += 1;
+            }
             try self.tree.addChild(t, null, side);
             try self.tree.visitBranch(side);
             self.depth += 1;
@@ -266,6 +303,7 @@ pub const AST = struct {
             switch (self.tokens[self.index].Type) {
                 .AND, .SEMI => {
                     try self.consume(.separator, self.tokens[self.index], .RIGHT);
+                    try self.parseList();
                 },
                 else => {
                     try self.consume(.list, null, .LEFT);
@@ -345,15 +383,20 @@ pub const AST = struct {
                     try self.parseCompoundCommand();
                 },
                 .WORD => {
-                    switch (self.tokens[self.index + 1].Type) {
-                        .LPAREN => {
-                            try self.consume(.function_definition, null, .LEFT);
-                            //try self.parseFunctionDefinition();
-                        },
-                        else => {
-                            try self.consume(.simple_command, null, .LEFT);
-                            try self.parseSimpleCommand();
-                        },
+                    if (self.index + 1 < self.tokens.len) {
+                        switch (self.tokens[self.index + 1].Type) {
+                            .LPAREN => {
+                                try self.consume(.function_definition, null, .LEFT);
+                                //try self.parseFunctionDefinition();
+                            },
+                            else => {
+                                try self.consume(.simple_command, null, .LEFT);
+                                try self.parseSimpleCommand();
+                            },
+                        }
+                    } else {
+                        try self.consume(.simple_command, null, .LEFT);
+                        try self.parseSimpleCommand();
                     }
                 },
                 else => {
@@ -365,7 +408,14 @@ pub const AST = struct {
     }
 
     fn parseCompoundCommand(self: *AST) !void {
-        _ = self;
+        while (self.index < self.tokens.len) {
+            switch (self.tokens[self.index].Type) {
+                .LPAREN => {
+                    try self.consume(.subshell, null, .LEFT);
+                },
+                else => {},
+            }
+        }
     }
 
     fn parseSimpleCommand(self: *AST) TreeErr!void {
@@ -373,27 +423,28 @@ pub const AST = struct {
             switch (self.tokens[self.index].Type) {
                 .WORD => {
                     if (self.tree.branchExists(.LEFT)) {
-                        std.debug.print("cmd_suffix: {s}\n", .{self.tokens[self.index].value.Str});
+                        //std.debug.print("cmd_suffix: {s}\n", .{self.tokens[self.index].value.Str});
                         try self.consume(.cmd_suffix, self.tokens[self.index], .RIGHT);
                         try self.tree.visitParent();
                         self.depth -= 1;
                     } else {
-                        std.debug.print("cmd_name: {s}\n", .{self.tokens[self.index].value.Str});
+                        //std.debug.print("cmd_name: {s}\n", .{self.tokens[self.index].value.Str});
                         try self.consume(.cmd_name, self.tokens[self.index], .LEFT);
                         try self.tree.visitParent();
                         self.depth -= 1;
                     }
                 },
                 else => {
-                    var temp = self.depth;
+                    //var temp = self.depth;
+                    //std.debug.print("{d}\n", .{self.depth});
                     for (1..self.depth) |i| {
                         try self.tree.visitParent();
                         _ = i;
-                        temp -= 1;
+                        //temp -= 1;
                     }
-                    self.depth -= temp;
+                    self.depth = 1;
                     //std.debug.print("{any}\n", .{self.tree.curr.?.Type});
-                    self.parseList() catch std.debug.print("FAIL\n", .{});
+                    self.parseList() catch std.debug.print("FAIl\n", .{});
                 },
             }
         }
@@ -407,7 +458,7 @@ pub const AST = struct {
 test "parse 2 commands" {
     const allocator = std.testing.allocator;
 
-    const line = "ls test; echo hello";
+    const line = "ls test; echo hello; ls an; echo two";
 
     var lex = try Lexer.init(line, allocator);
     defer lex.deinit();
@@ -416,8 +467,16 @@ test "parse 2 commands" {
     defer list.deinit();
 
     var ast = AST.init(allocator, list.items);
+    defer ast.deinit();
 
     try ast.parse();
+    try std.testing.expect(ast.tree.head.?.Type == .complete_command);
+    try std.testing.expect(ast.tree.curr.?.Type == .simple_command);
+    ast.tree.bottom();
+    const node = ast.tree.next();
+    try std.testing.expect(std.mem.eql(u8, node.?.child.?.value.Str, "ls"));
+    const node2 = ast.tree.next();
+    try std.testing.expect(std.mem.eql(u8, node2.?.child.?.value.Str, "test"));
+    //var p = ast.tree.head.?;
 
-    ast.deinit();
 }
