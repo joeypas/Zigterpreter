@@ -1,47 +1,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const types = @import("types.zig");
+const astree = @import("ast.zig");
 
-// Token Types
-const TType = enum {
-    INTEGER,
-    PLUS,
-    MINUS,
-    MULTI,
-    DIVIS,
-    EOF,
-    LPAREN,
-    RPAREN,
-};
-
-// Type to hold either a character or a number
-const CharNum = union(enum) {
-    Char: u8,
-    Num: i128,
-};
-
-// Struct to hold the token type and the value
-const Token = struct {
-    Type: TType,
-    value: CharNum,
-
-    pub fn init(Ty: TType, val: CharNum) Token {
-        return Token{
-            .Type = Ty,
-            .value = val,
-        };
-    }
-
-    pub fn str(self: Token, allocator: Allocator) std.fmt.AllocPrintError![]u8 {
-        switch (self.value) {
-            .Num => |num| return std.fmt.allocPrint(allocator, "Token({s}, {d})", .{ @tagName(self.Type), num }),
-            .Char => |char| return std.fmt.allocPrint(allocator, "Token({s}, {c})", .{ @tagName(self.Type), char }),
-        }
-    }
-};
-
-// Error Types
-const TokenError = error{ InvalidToken, InvalidCharacter, InvalidType, Mem };
+const Token = types.Token;
+const TType = types.TType;
+const TokenError = types.TokenError;
+const CharNum = types.CharNum;
+const AST = astree.AST;
+const TreeType = astree.TreeType;
 
 // LEXER CODE
 // The lexer takes in a string and returns a list of tokens
@@ -53,12 +21,30 @@ const Lexer = struct {
 
     // Initialize the lexer with the input string
     pub fn init(text: []const u8, alloc: Allocator) Lexer {
-        return Lexer{
-            .text = text,
-            .allocator = alloc,
-            .pos = 0,
-            .current_char = text[0],
-        };
+        if (text.len < 1) {
+            return Lexer{
+                .text = text,
+                .allocator = alloc,
+                .pos = 0,
+                .current_char = undefined,
+            };
+        } else {
+            return Lexer{
+                .text = text,
+                .allocator = alloc,
+                .pos = 0,
+                .current_char = text[0],
+            };
+        }
+    }
+
+    fn peek(self: *Lexer) ?u8 {
+        const peek_pos = self.pos + 1;
+        if (peek_pos > self.text.len - 1) {
+            return null;
+        } else {
+            return self.text[peek_pos];
+        }
     }
 
     // Advance the current character
@@ -75,6 +61,22 @@ const Lexer = struct {
     fn skipWhitespace(self: *Lexer) void {
         while (self.current_char != null and std.ascii.isWhitespace(self.current_char.?)) {
             self.advance();
+        }
+    }
+
+    fn id(self: *Lexer) TokenError!Token {
+        var i: usize = self.pos;
+        while (self.current_char != null and std.ascii.isAlphanumeric(self.current_char.?)) {
+            self.advance();
+        }
+
+        const result = self.text[i..self.pos];
+        if (std.mem.eql(u8, result, "BEGIN")) {
+            return Token.init(.BEGIN, .{ .Str = "BEGIN" });
+        } else if (std.mem.eql(u8, result, "END")) {
+            return Token.init(.END, .{ .Str = "END" });
+        } else {
+            return Token.init(.ID, .{ .Str = result });
         }
     }
 
@@ -103,6 +105,27 @@ const Lexer = struct {
             if (std.ascii.isDigit(self.current_char.?)) {
                 const num = self.integer() catch return TokenError.InvalidCharacter;
                 return Token.init(TType.INTEGER, .{ .Num = num });
+            }
+
+            if (std.ascii.isAlphabetic(self.current_char.?)) {
+                const _id = try self.id();
+                return _id;
+            }
+
+            if (self.current_char == ':' and self.peek() == '=') {
+                self.advance();
+                self.advance();
+                return Token.init(TType.ASSIGN, .{ .Str = ":=" });
+            }
+
+            if (self.current_char == ';') {
+                self.advance();
+                return Token.init(TType.SEMI, .{ .Char = ';' });
+            }
+
+            if (self.current_char == '.') {
+                self.advance();
+                return Token.init(TType.DOT, .{ .Char = '.' });
             }
 
             if (self.current_char == '+') {
@@ -142,13 +165,28 @@ const Lexer = struct {
     }
 };
 
+test "Lexer" {
+    const text = "BEGIN a := 2; END.\n";
+    var lex = Lexer.init(text, std.testing.allocator);
+    const first = try lex.getNextToken();
+    const second = try lex.getNextToken();
+
+    const str1 = try first.str(std.testing.allocator);
+    const str2 = try second.str(std.testing.allocator);
+    defer std.testing.allocator.free(str1);
+    defer std.testing.allocator.free(str2);
+
+    std.debug.print("{s}\n", .{str1});
+    std.debug.print("{s}\n", .{str2});
+}
+
 // PARSER CODE
 // The parser takes in a list of tokens and returns an abstract syntax tree
 const Parser = struct {
     current_token: Token,
     lexer: *Lexer,
     allocator: Allocator,
-    head: *Tree(Token),
+    head: *AST,
 
     // Initialize the parser with the lexer and a list
     // to keep track of allocated nodes
@@ -167,24 +205,49 @@ const Parser = struct {
     }
 
     // Recursively delete the tree
-    fn delete(self: *Parser, tree: *Tree(Token)) void {
+    fn delete(self: *Parser, tree: *AST) void {
         switch (tree.*) {
-            .Branch => |branch| {
-                self.delete(branch.left);
+            .BinOp => |branch| {
                 self.delete(branch.right);
+                self.delete(branch.left);
                 self.allocator.destroy(tree);
             },
-            .Data => self.allocator.destroy(tree),
+            .Num => self.allocator.destroy(tree),
+            .UnaryOp => |branch| {
+                self.delete(branch.expr);
+                self.allocator.destroy(tree);
+            },
         }
     }
 
     // Factor is the smallest unit of the expression
-    pub fn factor(self: *Parser) TokenError!*Tree(Token) {
+    pub fn factor(self: *Parser) TokenError!*AST {
         const token = self.current_token;
-        if (token.Type == TType.INTEGER) {
+        if (token.Type == TType.PLUS) {
+            try self.eat(TType.PLUS);
+            const node = self.allocator.create(AST) catch return TokenError.Mem;
+            const exp = try self.factor();
+            node.* = AST{
+                .UnaryOp = .{
+                    .token = token,
+                    .expr = exp,
+                },
+            };
+        } else if (token.Type == TType.MINUS) {
+            try self.eat(TType.MINUS);
+            const node = self.allocator.create(AST) catch return TokenError.Mem;
+            const exp = try self.factor();
+            node.* = AST{
+                .UnaryOp = .{
+                    .token = token,
+                    .expr = exp,
+                },
+            };
+            return node;
+        } else if (token.Type == TType.INTEGER) {
             try self.eat(TType.INTEGER);
-            const node = self.allocator.create(Tree(Token)) catch return TokenError.Mem;
-            node.* = Tree(Token){ .Data = token };
+            const node = self.allocator.create(AST) catch return TokenError.Mem;
+            node.* = AST{ .Num = .{ .token = token } };
             return node;
         } else if (token.Type == TType.LPAREN) {
             try self.eat(TType.LPAREN);
@@ -196,7 +259,7 @@ const Parser = struct {
     }
 
     // Term is the next level of the expression
-    pub fn term(self: *Parser) TokenError!*Tree(Token) {
+    pub fn term(self: *Parser) TokenError!*AST {
         var result = try self.factor();
 
         while (self.current_token.Type == TType.MULTI or self.current_token.Type == TType.DIVIS) {
@@ -208,12 +271,12 @@ const Parser = struct {
             }
 
             const part = try self.factor();
-            const node = self.allocator.create(Tree(Token)) catch return TokenError.Mem;
-            const branch = Tree(Token){
-                .Branch = .{
+            const node = self.allocator.create(AST) catch return TokenError.Mem;
+            const branch = AST{
+                .BinOp = .{
                     .left = result,
                     .right = part,
-                    .Data = token,
+                    .token = token,
                 },
             };
             node.* = branch;
@@ -235,7 +298,7 @@ const Parser = struct {
     }
 
     // Expression is the highest level of the expression
-    pub fn expr(self: *Parser) TokenError!*Tree(Token) {
+    pub fn expr(self: *Parser) TokenError!*AST {
         var result = try self.term();
 
         while (self.current_token.Type == TType.PLUS or self.current_token.Type == TType.MINUS) {
@@ -247,12 +310,12 @@ const Parser = struct {
             }
 
             const part = try self.term();
-            const node = self.allocator.create(Tree(Token)) catch return TokenError.Mem;
-            const branch = Tree(Token){
-                .Branch = .{
+            const node = self.allocator.create(AST) catch return TokenError.Mem;
+            const branch = AST{
+                .BinOp = .{
                     .left = result,
                     .right = part,
-                    .Data = token,
+                    .token = token,
                 },
             };
             node.* = branch;
@@ -264,20 +327,6 @@ const Parser = struct {
         return result;
     }
 };
-
-// The tree type is a union of a data type and a branch type
-// basically the AST type
-pub fn Tree(comptime T: type) type {
-    return union(enum) {
-        Data: T,
-
-        Branch: struct {
-            left: *Tree(T),
-            right: *Tree(T),
-            Data: T,
-        },
-    };
-}
 
 // INTERPRETER CODE
 // The interpreter takes in an abstract syntax tree and returns the result of the expression
@@ -291,28 +340,9 @@ const Interpreter = struct {
     }
 
     // Recursively visit the tree and return the result
-    fn visit(self: *Interpreter, node: *Tree(Token)) i128 {
-        switch (node.*) {
-            .Branch => |branch| {
-                if (branch.Data.Type == TType.PLUS) {
-                    return self.visit(branch.left) + self.visit(branch.right);
-                } else if (branch.Data.Type == TType.MINUS) {
-                    return self.visit(branch.left) - self.visit(branch.right);
-                } else if (branch.Data.Type == TType.MULTI) {
-                    return self.visit(branch.left) * self.visit(branch.right);
-                } else if (branch.Data.Type == TType.DIVIS) {
-                    return @divTrunc(self.visit(branch.left), self.visit(branch.right));
-                } else {
-                    unreachable;
-                }
-            },
-            .Data => |data| {
-                switch (data.value) {
-                    .Num => return data.value.Num,
-                    .Char => unreachable,
-                }
-            },
-        }
+    fn visit(self: *Interpreter, node: *AST) i128 {
+        _ = self;
+        return node.visit();
     }
 
     pub fn interpret(self: *Interpreter) !i128 {
@@ -321,16 +351,6 @@ const Interpreter = struct {
         return res;
     }
 };
-
-test "Lexer" {
-    const text = "(5+5)*5\n";
-    var lex = Lexer.init(text, std.testing.allocator);
-    var parser = try Parser.init(std.testing.allocator, &lex);
-    defer parser.deinit();
-    var int = Interpreter.init(&parser);
-    const result = try int.interpret();
-    try std.testing.expect(result == 50);
-}
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
