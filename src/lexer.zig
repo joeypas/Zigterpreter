@@ -62,7 +62,7 @@ pub const Lexer = struct {
     }
 
     fn id(self: *Lexer) TokenError!Token {
-        var i: usize = self.pos;
+        const i: usize = self.pos;
         while (self.current_char != null and std.ascii.isAlphanumeric(self.current_char.?)) {
             self.advance();
         }
